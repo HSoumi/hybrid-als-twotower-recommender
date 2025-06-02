@@ -49,11 +49,11 @@ Recommender Systems are vital for enhancing user experience on e-commerce platfo
 
 ## Repository Structure
 ```
-├── src/ # Core implementation modules
-├── notebooks/ # Jupyter notebooks for exploration
-├── data/ # Dataset and preprocessing info
-├── results/ # Experimental results and figures
-└── docs/ # Additional documentation
+├── src/              # Core implementation modules
+├── notebooks/        # Jupyter notebooks for exploration
+├── data/             # Dataset and preprocessing info
+├── results/          # Experimental results and figures
+└── docs/             # Additional documentation
 ```
 
 
