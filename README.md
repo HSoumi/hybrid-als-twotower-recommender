@@ -48,13 +48,13 @@ Recommender Systems are vital for enhancing user experience on e-commerce platfo
 - **Performance**: Consistent outperformance over individual models
 
 ## Repository Structure
+```
 ├── src/ # Core implementation modules
 ├── notebooks/ # Jupyter notebooks for exploration
 ├── data/ # Dataset and preprocessing info
 ├── results/ # Experimental results and figures
 └── docs/ # Additional documentation
-
-undefined
+```
 
 
 ## Quick Start
