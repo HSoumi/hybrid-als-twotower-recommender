@@ -157,7 +157,7 @@ evaluator.plot_precision_recall_at_k(results, model_name="Hybrid System")
 
 ## Dependencies
 
-- **PySpark 3.5.1**: For ALS collaborative filtering
+- **PySpark 3.5.1**: For ALS collaborative filtering (Note: PySpark requires Java 8/11 and proper Spark configuration)
 - **TensorFlow 2.8.0**: For Two-Tower neural network
 - **scikit-learn 1.0.2**: For evaluation metrics and preprocessing
 - **pandas 1.4.2**: For data manipulation
