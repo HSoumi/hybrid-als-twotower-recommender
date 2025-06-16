@@ -164,6 +164,16 @@ def display_dataset_info(data):
     except Exception as e:
         print(f"Error displaying dataset info: {str(e)}")
 
+def get_environment_info():
+    """Return environment details for reproducibility"""
+    return {
+        "python": "3.9",
+        "pyspark": "3.5.1",
+        "tensorflow": "2.8.0",
+        "scikit-learn": "1.2.2",
+        "hardware": "CPU-only",
+        "validation": "F1@10 driven"
+    }
 
 if __name__ == "__main__":
     # Example usage of utility functions
