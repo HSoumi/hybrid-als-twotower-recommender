@@ -2,7 +2,7 @@
 ALS Collaborative Filtering Model Implementation
 
 This module implements the Alternating Least Squares (ALS) model using PySpark
-for collaborative filtering recommendations.
+for collaborative filtering recommendations, exactly as described in the manuscript.
 """
 
 import warnings
@@ -10,6 +10,9 @@ from pyspark.sql import SparkSession
 from pyspark.ml.recommendation import ALS
 from pyspark.sql.types import *
 import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from .evaluation import compute_f1_score
 
 warnings.filterwarnings('ignore')
 
@@ -18,7 +21,7 @@ class ALSModel:
     """
     ALS Collaborative Filtering Model using PySpark
     
-    Parameters:
+    Parameters (matches manuscript Table 1):
     -----------
     rank : int
         Number of latent factors (default: 10)
@@ -53,7 +56,7 @@ class ALSModel:
     
     def train(self, data):
         """
-        Train ALS model on user-item interaction data
+        Train ALS model on user-item interaction data (matches manuscript §4.2)
         
         Parameters:
         -----------
@@ -72,7 +75,7 @@ class ALSModel:
             # Convert pandas DataFrame to Spark DataFrame
             spark_df = self.spark.createDataFrame(data)
             
-            # Initialize ALS model
+            # Initialize ALS model with parameters from Table 1
             als = ALS(
                 rank=self.rank,
                 maxIter=self.max_iter,
@@ -96,6 +99,7 @@ class ALSModel:
     def predict_for_user(self, user_id, all_items):
         """
         Generate predictions for a specific user across all items
+        (matches manuscript evaluation methodology)
         
         Parameters:
         -----------
@@ -138,7 +142,7 @@ class ALSModel:
     
     def get_top_recommendations(self, user_id, all_items, top_k=5):
         """
-        Get top-K recommendations for a user
+        Get top-K recommendations for a user (matches manuscript §4.4)
         
         Parameters:
         -----------
@@ -169,48 +173,91 @@ class ALSModel:
             print("Spark session stopped")
 
 
-def hyperparameter_tuning(data, param_grid):
+def hyperparameter_tuning(data, param_grid, test_size=0.2, random_state=42):
     """
-    Perform hyperparameter tuning for ALS model
+    Perform F1-based hyperparameter tuning as described in manuscript §4.3
     
     Parameters:
     -----------
     data : pd.DataFrame
-        Training data
-    param_grid : dict
-        Dictionary containing parameter combinations to try
+        Training data with columns: userId, itemId, average_review_rating
+    param_grid : list
+        List of parameter dictionaries to try (matches Table 1)
+    test_size : float
+        Proportion of data to use for validation
+    random_state : int
+        Random seed for reproducibility
         
     Returns:
     --------
-    dict : Best parameters found
+    dict : Best parameters found based on F1@10
     """
     best_params = None
-    best_score = float('-inf')
+    best_f1 = 0.0
+    
+    # Split data into train and validation sets
+    train_data, val_data = train_test_split(data, test_size=test_size, 
+                                          random_state=random_state)
+    
+    print(f"Hyperparameter tuning with {len(param_grid)} combinations")
+    print(f"Training samples: {len(train_data)}, Validation samples: {len(val_data)}")
     
     for params in param_grid:
-        model = ALSModel(
-            rank=params['rank'],
-            max_iter=params['max_iter'],
-            reg_param=params['reg_param']
-        )
+        print(f"\nTesting parameters: {params}")
+        model = ALSModel(**params)
         
-        if model.train(data):
-            # Here you would evaluate the model and get a score
-            # For now, we'll just return the first valid params
-            print(f"Tested params: {params}")
-            model.stop_spark()
+        try:
+            # Train model
+            if not model.train(train_data):
+                continue
             
-            if best_params is None:
-                best_params = params
+            # Prepare validation users (5% sample for efficiency)
+            val_users = val_data['userId'].unique()
+            sample_users = np.random.choice(val_users, 
+                                           size=int(len(val_users)*0.05), 
+                                           replace=False)
+            
+            f1_scores = []
+            for user_id in sample_users:
+                # Get user's actual ratings
+                user_ratings = val_data[val_data['userId'] == user_id]
+                actual = dict(zip(user_ratings['itemId'], 
+                                user_ratings['average_review_rating']))
+                
+                # Get all items for prediction
+                all_items = val_data['itemId'].unique().tolist()
+                
+                # Generate predictions
+                preds = model.predict_for_user(user_id, all_items)
+                pred_dict = {item: score for item, score in preds}
+                
+                # Compute F1@10
+                f1 = compute_f1_score(actual, pred_dict, k=10)
+                f1_scores.append(f1)
+            
+            # Calculate average F1 score
+            avg_f1 = np.mean(f1_scores) if f1_scores else 0.0
+            print(f"Average F1@10: {avg_f1:.4f}")
+            
+            # Update best parameters
+            if avg_f1 > best_f1:
+                best_f1 = avg_f1
+                best_params = params.copy()
+                print(f"New best F1: {best_f1:.4f}")
+            
+        finally:
+            # Cleanup Spark resources
+            model.stop_spark()
     
+    print(f"\nBest parameters: {best_params} (F1@10: {best_f1:.4f})")
     return best_params
 
 
 if __name__ == "__main__":
-    # Example usage
+    # Example usage matching manuscript parameters
     print("ALS Model module loaded successfully")
     
-    # Example parameter grid for hyperparameter tuning
+    # Parameter grid from manuscript Table 1
     param_grid = [
         {'rank': 10, 'max_iter': 10, 'reg_param': 0.1},
         {'rank': 20, 'max_iter': 20, 'reg_param': 0.05},
