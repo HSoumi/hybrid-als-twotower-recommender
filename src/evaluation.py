@@ -413,6 +413,6 @@ if __name__ == "__main__":
     for metric, value in results.items():
         print(f"{metric:15}: {value:.4f}")
     
-    print("\n✅ All evaluation functions working correctly!")
+    print("\n All evaluation functions working correctly!")
     print("="*50)
 
