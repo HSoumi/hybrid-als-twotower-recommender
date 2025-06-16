@@ -8,6 +8,9 @@ for the hybrid recommender system.
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.preprocessing import MinMaxScaler
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -112,6 +115,15 @@ def probability_based_imputation(data):
             print(f"Imputed {num_missing} missing values in '{column}' column")
     
     return data
+def assign_placeholder_ratings(data):
+    text_cols = ['description','product_name','product_information','customer_reviews']
+    num_cols  = ['price','average_review_rating','manufacturer',
+                 'amazon_category_and_sub_category']
+    text_data = data[text_cols].fillna("").agg(" ".join, axis=1)
+    tfidf     = TfidfVectorizer(max_features=3000).fit_transform(text_data)
+    scaler    = MinMaxScaler().fit(data[num_cols])
+    num_data  = scaler.transform(data[num_cols])
+    sim_mat   = cosine_similarity(np.hstack([tfidf.toarray(), num_data]))
 
 
 def encode_categorical_features(data):
@@ -208,14 +220,17 @@ def engineer_features(data):
     
     # Step 2: Apply probability-based imputation
     data = probability_based_imputation(data)
+
+    # Step 3: placeholder ratings
+    data = assign_placeholder_ratings(data)
     
-    # Step 3: Encode categorical features
+    # Step 4: Encode categorical features
     data = encode_categorical_features(data)
     
-    # Step 4: Create itemId
+    # Step 5: Create itemId
     data = create_item_id(data)
     
-    # Step 5: Rename columns
+    # Step 6: Rename columns
     data = rename_columns(data)
     
     # Create datasets for different models
