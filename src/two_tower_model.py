@@ -201,64 +201,109 @@ class TwoTowerModel:
             print(f"Error loading model: {str(e)}")
 
 
-def hyperparameter_tuning(data, param_grid):
+def hyperparameter_tuning(data, param_grid, test_size=0.2, random_state=42):
     """
-    Perform hyperparameter tuning for Two-Tower model
-    
-    Parameters from Table 2 in manuscript:
-    batch_size ∈ {32, 64, 128, 256, 512}
-    epochs ∈ {50, 30, 20, 10, 5}
+    Perform F1-based hyperparameter tuning as described in manuscript §4.3
     
     Parameters:
     -----------
     data : pd.DataFrame
-        Training data with columns: userId, itemId, average_review_rating
+        Training data with columns: userId, itemId, and features
     param_grid : list
-        List of parameter dictionaries to try
+        List of parameter dictionaries to try (matches Table 2)
+    test_size : float
+        Proportion of data to use for validation
+    random_state : int
+        Random seed for reproducibility
         
     Returns:
     --------
-    dict : Best parameters found based on validation loss
+    dict : Best parameters found based on average F1@10
     """
     best_params = None
-    best_loss = float('inf')
+    best_f1 = 0.0
     
-    num_users = data['userId'].nunique()
-    num_items = data['itemId'].nunique()
-    num_manufacturers = data['manufacturer_id'].nunique()
-    num_categories = data['category_id'].nunique()
+    # Split data by users for cold-start evaluation
+    users = data['userId'].unique()
+    train_users, val_users = train_test_split(users, test_size=test_size, 
+                                            random_state=random_state)
+    
+    train_data = data[data['userId'].isin(train_users)]
+    val_data = data[data['userId'].isin(val_users)]
+    
+    # Get complete item features from all data
+    all_items = data[[
+        'itemId', 'manufacturer_id', 'category_id', 
+        'price', 'average_review_rating', 'bert_768'
+    ]].drop_duplicates()
+    
+    print(f"Training users: {len(train_users)}, Validation users: {len(val_users)}")
+    print(f"Total items: {all_items['itemId'].nunique()}")
     
     for params in param_grid:
-        print(f"Testing parameters: {params}")
+        print(f"\nTesting combination: {params}")
         
-        model = TwoTowerModel(
-            num_users=num_users,
-            num_items=num_items,
-            num_manufacturers=num_manufacturers,
-            num_categories=num_categories,
-            embedding_size=50,  # Fixed
-            learning_rate=0.001  # Adam default
-        )
-        
-        history = model.train(
-            data,
-            batch_size=params['batch_size'],
-            epochs=params['epochs']
-        )
-        
-        if history:
-            final_loss = min(history.history['val_loss'])
-            print(f"  Final validation loss: {final_loss:.4f}")
-            if final_loss < best_loss:
-                best_loss = final_loss
-                best_params = params
+        try:
+            # Initialize model with current dataset stats
+            model = TwoTowerModel(
+                num_users=data['userId'].nunique(),
+                num_items=data['itemId'].nunique(),
+                num_manufacturers=data['manufacturer_id'].nunique(),
+                num_categories=data['category_id'].nunique(),
+                embedding_size=50,  # Fixed per manuscript
+                learning_rate=0.001  # Default
+            )
+            
+            # Train model with current parameters
+            history = model.train(
+                train_data,
+                batch_size=params['batch_size'],
+                epochs=params['epochs']
+            )
+            
+            if not history:
+                print("Training failed")
+                continue
                 
-        # Clear session to prevent memory issues
-        tf.keras.backend.clear_session()
+            # Evaluate on validation users (sample 50 for efficiency)
+            f1_scores = []
+            for user_id in val_users[:50]:
+                # Get actual ratings from validation data
+                user_ratings = val_data[val_data['userId'] == user_id]
+                if len(user_ratings) < 1:
+                    continue
                 
-    print(f"Best parameters: {best_params} (loss: {best_loss:.4f})")
+                actual = dict(zip(user_ratings['itemId'], 
+                                user_ratings['average_review_rating']))
+                
+                # Generate predictions for all items
+                preds = model.predict_for_user(user_id, all_items)
+                pred_dict = {item: score for item, score in preds}
+                
+                # Calculate F1@10 as per manuscript
+                f1 = compute_f1_score(actual, pred_dict, k=10)
+                f1_scores.append(f1)
+            
+            if not f1_scores:
+                print("No valid users for evaluation")
+                continue
+                
+            avg_f1 = np.mean(f1_scores)
+            print(f"Average F1@10: {avg_f1:.4f}")
+            
+            if avg_f1 > best_f1:
+                best_f1 = avg_f1
+                best_params = params.copy()
+                print(f"New best F1: {best_f1:.4f}")
+                
+        except Exception as e:
+            print(f"Error: {str(e)}")
+            continue
+        finally:
+            tf.keras.backend.clear_session()
+    
+    print(f"\nBest parameters: {best_params} (F1@10: {best_f1:.4f})")
     return best_params
-
 
 if __name__ == "__main__":
     print("Two-Tower Model module loaded successfully")
