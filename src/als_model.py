@@ -129,11 +129,17 @@ class ALSModel:
             # Generate predictions
             predictions = self.model.transform(user_item_df)
             predictions_list = predictions.select("itemId", "prediction").collect()
-            
-            # Convert to list of tuples
             result = [(row.itemId, float(row.prediction)) for row in predictions_list]
-            
-            print(f"Generated {len(result)} predictions for user {user_id}")
+    
+            # Cold-start handling (manuscript's probability imputation)
+            from src.data_preprocessing import get_placeholder_rating  # New import
+            all_items_set = set(all_items)
+            predicted_items = {item_id for item_id, _ in result}
+            cold_items = all_items_set - predicted_items
+    
+            for item_id in cold_items:
+                placeholder = get_placeholder_rating(item_id)  # Implemented in data_preprocessing
+                result.append((item_id, placeholder))
             return result
             
         except Exception as e:
