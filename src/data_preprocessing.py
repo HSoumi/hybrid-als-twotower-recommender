@@ -116,14 +116,42 @@ def probability_based_imputation(data):
     
     return data
 def assign_placeholder_ratings(data):
-    text_cols = ['description','product_name','product_information','customer_reviews']
-    num_cols  = ['price','average_review_rating','manufacturer',
-                 'amazon_category_and_sub_category']
-    text_data = data[text_cols].fillna("").agg(" ".join, axis=1)
-    tfidf     = TfidfVectorizer(max_features=3000).fit_transform(text_data)
-    scaler    = MinMaxScaler().fit(data[num_cols])
-    num_data  = scaler.transform(data[num_cols])
-    sim_mat   = cosine_similarity(np.hstack([tfidf.toarray(), num_data]))
+    """Implement manuscript's cold-start strategy from §3"""
+    # Calculate global mean rating
+    global_mean = data['average_review_rating'].mean()
+    
+    # For users with <3 ratings
+    for user_id in data[data.groupby('userId')['userId'].transform('count') < 3]['userId'].unique():
+        user_data = data[data['userId'] == user_id]
+        
+        # Calculate similarity between items
+        items = data[['itemId', 'price', 'average_review_rating', 
+                     'manufacturer', 'category']].drop_duplicates()
+        
+        # Numeric features
+        num_features = items[['price', 'average_review_rating']]
+        num_features = MinMaxScaler().fit_transform(num_features)
+        
+        # Categorical features
+        cat_features = pd.get_dummies(items[['manufacturer', 'category']])
+        
+        # Combined similarity
+        similarity_matrix = cosine_similarity(np.hstack([num_features, cat_features]))
+        
+        # For each under-rated item
+        for idx, row in user_data.iterrows():
+            similar_items = items[
+                similarity_matrix[row['itemId']] > 0.5
+            ].index.tolist()
+            
+            if similar_items:
+                placeholder = data.loc[similar_items, 'average_review_rating'].mean()
+            else:
+                placeholder = global_mean
+                
+            data.loc[idx, 'average_review_rating'] = placeholder
+    
+    return data
 
 
 def encode_categorical_features(data):
