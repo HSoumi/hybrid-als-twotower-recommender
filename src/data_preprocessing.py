@@ -25,6 +25,9 @@ def load_amazon_dataset(filepath):
     Returns:
         pd.DataFrame: Raw dataset with product attributes
     """
+    if not os.path.exists(filepath):
+        print("Downloading dataset...")
+        os.system('wget https://github.com/aksharpandia/miniamazon/blob/master/amazon_co-ecommerce_sample.csv')
     try:
         data = pd.read_csv(filepath)
         print(f"Dataset loaded successfully. Shape: {data.shape}")
