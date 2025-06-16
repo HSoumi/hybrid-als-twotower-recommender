@@ -214,7 +214,9 @@ if __name__ == "__main__":
     param_grid = [
         {'rank': 10, 'max_iter': 10, 'reg_param': 0.1},
         {'rank': 20, 'max_iter': 20, 'reg_param': 0.05},
-        {'rank': 15, 'max_iter': 15, 'reg_param': 0.5}
+        {'rank': 15, 'max_iter': 15, 'reg_param': 0.5},
+        {'rank': 20, 'max_iter': 5, 'reg_param': 0.1},
+        {'rank': 15, 'max_iter': 12, 'reg_param': 0.2}
     ]
     
     print("Available hyperparameter combinations:", len(param_grid))
