@@ -1,8 +1,9 @@
-pyspark==3.5.1
-tensorflow==2.8.0 # Use tensorflow-gpu==2.8.0 for GPU acceleration
-scikit-learn==1.0.2
+pyspark==3.5.1 
+tensorflow==2.8.0  # Use tensorflow-gpu==2.8.0 for GPU acceleration
+scikit-learn==1.2.2  
 pandas==1.4.2
 numpy==1.21.5
 matplotlib==3.5.1
 seaborn==0.11.2
+protobuf==3.20.3  # Add to prevent version conflicts
 
