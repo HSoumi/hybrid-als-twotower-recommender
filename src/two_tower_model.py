@@ -64,7 +64,9 @@ class TwoTowerModel:
         user_vec = Flatten(name='user_flatten')(user_embedding)
         
         # Item tower
-        item_input = Input(shape=(1,), name='item_input')
+        item_input = Input(shape=(6,), name='item_features') # price, manufacturer, etc
+        item_dense = Dense(64, activation='relu')(item_input)
+        item_embedding = Dense(embedding_size)(item_dense)
         item_embedding = Embedding(
             self.num_items, 
             self.embedding_size, 
