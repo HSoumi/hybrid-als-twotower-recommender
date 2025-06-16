@@ -25,7 +25,7 @@ class TwoTowerModel:
     
     Architecture matches manuscript description:
     - User Tower: userId embedding
-    - Item Tower: Combines itemId, manufacturer, category, price, and text features
+    - Item Tower: Combines itemId, manufacturer, category, and price features
     - Similarity: Dot product of user and item vectors (Equation 2)
     """
     
@@ -42,7 +42,7 @@ class TwoTowerModel:
         self.is_trained = False
 
     def _build_item_tower(self):
-        """Construct item tower with metadata features as per manuscript"""
+        """Simplified item tower without BERT per manuscript"""
         # Item ID embedding
         item_id_in = Input(shape=(1,), name='item_id_in')
         item_id_emb = Embedding(self.num_items, self.embedding_size, 
@@ -65,19 +65,15 @@ class TwoTowerModel:
         numeric_in = Input(shape=(2,), name='numeric_in')
         numeric_dense = Dense(16, activation='relu')(numeric_in)
         
-        # Text features (BERT embeddings)
-        text_in = Input(shape=(768,), name='text_in')
-        text_dense = Dense(64, activation='relu')(text_in)
-        
-        # Concatenate all item features
-        concat = Concatenate()([item_id_vec, manufacturer_vec, category_vec,
-                              numeric_dense, text_dense])
+        # Concatenate features 
+        concat = Concatenate()([item_id_vec, manufacturer_vec, 
+                              category_vec, numeric_dense])
         
         # Final item representation
         item_vec = Dense(self.embedding_size, activation=None)(concat)
         item_vec = LayerNormalization()(item_vec)
         
-        return [item_id_in, manufacturer_in, category_in, numeric_in, text_in], item_vec
+        return [item_id_in, manufacturer_in, category_in, numeric_in], item_vec
 
     def build_model(self):
         """Build complete Two-Tower architecture per manuscript"""
@@ -91,7 +87,7 @@ class TwoTowerModel:
         # Item tower
         item_inputs, item_vec = self._build_item_tower()
         
-        # Dot product similarity (Equation 2)
+        # Dot product similarity 
         dot_product = Dot(axes=1, name='dot_product')([user_vec, item_vec])
         
         # Compile model
@@ -108,14 +104,12 @@ class TwoTowerModel:
             if self.model is None:
                 self.build_model()
             
-            # Prepare features
             X = {
                 'user_in': data['userId'].values,
                 'item_id_in': data['itemId'].values,
                 'manufacturer_in': data['manufacturer_id'].values,
                 'category_in': data['category_id'].values,
-                'numeric_in': data[['price', 'average_review_rating']].values,
-                'text_in': np.vstack(data['bert_768'].values)
+                'numeric_in': data[['price', 'average_review_rating']].values
             }
             y = data['average_review_rating'].values
             
@@ -129,97 +123,153 @@ class TwoTowerModel:
             print(f"Training error: {str(e)}")
             return None
 
-    def predict_for_user(self, user_id, item_features):
-        """Generate predictions for a user across items"""
-        if not self.is_trained:
-            raise ValueError("Model not trained")
-            
-        # Prepare input data
-        inputs = {
-            'user_in': np.full(len(item_features), user_id),
-            'item_id_in': item_features['itemId'].values,
-            'manufacturer_in': item_features['manufacturer_id'].values,
-            'category_in': item_features['category_id'].values,
-            'numeric_in': item_features[['price', 'avg_rating']].values,
-            'text_in': np.vstack(item_features['bert_768'].values)
-        }
+    def predict_for_user(self, user_id, all_items):
+        """
+        Generate predictions for a specific user across all items
         
-        predictions = self.model.predict(inputs, verbose=0)
-        return list(zip(item_features['itemId'], predictions.flatten()))
+        Parameters:
+        -----------
+        user_id : int
+            User ID for which to generate predictions
+        all_items : list
+            List of all item IDs
+            
+        Returns:
+        --------
+        list : List of (itemId, prediction_score) tuples
+        """
+        try:
+            if not self.is_trained:
+                raise ValueError("Model not trained yet. Call train() first.")
+            
+            # Prepare input data
+            user_ids = np.array([user_id] * len(all_items))
+            item_ids = np.array(all_items)
+            
+            # Generate predictions
+            predictions = self.model.predict([user_ids, item_ids], verbose=0)
+            
+            # Convert to list of tuples
+            result = [(int(item_ids[i]), float(predictions[i])) 
+                     for i in range(len(all_items))]
+            
+            print(f"Generated {len(result)} predictions for user {user_id}")
+            return result
+            
+        except Exception as e:
+            print(f"Error generating predictions: {str(e)}")
+            return []
+    
+    def get_top_recommendations(self, user_id, all_items, top_k=5):
+        """
+        Get top-K recommendations for a user
+        
+        Parameters:
+        -----------
+        user_id : int
+            User ID for recommendations
+        all_items : list
+            List of all available item IDs
+        top_k : int
+            Number of top recommendations to return
+            
+        Returns:
+        --------
+        list : List of top-K (itemId, score) tuples sorted by score
+        """
+        predictions = self.predict_for_user(user_id, all_items)
+        if not predictions:
+            return []
+        
+        # Sort by prediction score in descending order and get top-K
+        sorted_predictions = sorted(predictions, key=lambda x: x[1], reverse=True)
+        return sorted_predictions[:top_k]
+    
+    def save_model(self, filepath):
+        """Save the trained model"""
+        if self.model:
+            self.model.save(filepath)
+            print(f"Model saved to {filepath}")
+    
+    def load_model(self, filepath):
+        """Load a pre-trained model"""
+        try:
+            self.model = tf.keras.models.load_model(filepath)
+            self.is_trained = True
+            print(f"Model loaded from {filepath}")
+        except Exception as e:
+            print(f"Error loading model: {str(e)}")
 
 
-def f1_based_hyperparameter_tuning(model_class, data, param_grid, 
-                                  test_size=0.2, random_state=42):
+def hyperparameter_tuning(data, param_grid):
     """
-    Generalized F1-based hyperparameter tuning (reusable for ALS/Two-Tower)
+    Perform hyperparameter tuning for Two-Tower model
+    
+    Parameters from Table 2 in manuscript:
+    batch_size ∈ {32, 64, 128, 256, 512}
+    epochs ∈ {50, 30, 20, 10, 5}
     
     Parameters:
     -----------
-    model_class : class
-        Model class to instantiate (TwoTowerModel or ALSModel)
     data : pd.DataFrame
-        Training data with required features
+        Training data with columns: userId, itemId, average_review_rating
     param_grid : list
         List of parameter dictionaries to try
-    test_size : float
-        Size of validation set for F1 calculation
-    random_state : int
-        Random seed for reproducibility
         
     Returns:
     --------
-    dict : Best parameters based on F1 score
+    dict : Best parameters found based on validation loss
     """
     best_params = None
-    best_f1 = 0
+    best_loss = float('inf')
     
-    # Split data for validation
-    train_data, val_data = train_test_split(data, test_size=test_size, 
-                                          random_state=random_state)
+    num_users = data['userId'].nunique()
+    num_items = data['itemId'].nunique()
+    num_manufacturers = data['manufacturer_id'].nunique()
+    num_categories = data['category_id'].nunique()
     
     for params in param_grid:
         print(f"Testing parameters: {params}")
         
-        try:
-            # Initialize model with current params
-            model = model_class(**params)
-            model.train(train_data)
-            
-            # Evaluate on validation set
-            f1_scores = []
-            for user_id in val_data['userId'].unique()[:50]:  # Sample users
-                actual = val_data[val_data['userId'] == user_id]
-                items = actual[['itemId', 'manufacturer_id', 'category_id',
-                              'price', 'avg_rating', 'bert_768']]
-                preds = model.predict_for_user(user_id, items)
-                pred_dict = {item: score for item, score in preds}
-                actual_dict = dict(zip(actual['itemId'], actual['rating']))
-                f1 = compute_f1_score(actual_dict, pred_dict)
-                f1_scores.append(f1)
+        model = TwoTowerModel(
+            num_users=num_users,
+            num_items=num_items,
+            num_manufacturers=num_manufacturers,
+            num_categories=num_categories,
+            embedding_size=50,  # Fixed
+            learning_rate=0.001  # Adam default
+        )
+        
+        history = model.train(
+            data,
+            batch_size=params['batch_size'],
+            epochs=params['epochs']
+        )
+        
+        if history:
+            final_loss = min(history.history['val_loss'])
+            print(f"  Final validation loss: {final_loss:.4f}")
+            if final_loss < best_loss:
+                best_loss = final_loss
+                best_params = params
                 
-            mean_f1 = np.mean(f1_scores)
-            print(f"Mean F1@10: {mean_f1:.4f}")
-            
-            if mean_f1 > best_f1:
-                best_f1 = mean_f1
-                best_params = params.copy()
+        # Clear session to prevent memory issues
+        tf.keras.backend.clear_session()
                 
-        except Exception as e:
-            print(f"Skipping parameters due to error: {str(e)}")
-            
-    print(f"\nBest F1@10: {best_f1:.4f} with params: {best_params}")
+    print(f"Best parameters: {best_params} (loss: {best_loss:.4f})")
     return best_params
 
 
-# Hyperparameter grid matching manuscript Table 2
-TWO_TOWER_PARAM_GRID = [
-    {'batch_size': 32, 'epochs': 50},
-    {'batch_size': 64, 'epochs': 30},
-    {'batch_size': 128, 'epochs': 20},
-    {'batch_size': 256, 'epochs': 10},
-    {'batch_size': 512, 'epochs': 5}
-]
-
-
 if __name__ == "__main__":
-    print("Two-Tower Model with F1-based tuning ready")
+    print("Two-Tower Model module loaded successfully")
+    
+    # Parameter grid exactly matching Table 2 in manuscript
+    param_grid = [
+        {'batch_size': 32, 'epochs': 50},
+        {'batch_size': 64, 'epochs': 30},
+        {'batch_size': 128, 'epochs': 20},
+        {'batch_size': 256, 'epochs': 10},
+        {'batch_size': 512, 'epochs': 5}
+    ]
+    
+    print("Available hyperparameter combinations:", len(param_grid))
