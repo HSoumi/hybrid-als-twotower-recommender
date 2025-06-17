@@ -42,6 +42,14 @@ The hybrid system consists of three main components:
    - Removal of ineffective features (`customer_questions_and_answers`, `number_of_answered_questions`)
    - Final validation and quality checks
 
+5. **Train-Test Split**
+   - User-level 80-20 split (80% users for training, 20% for testing)
+   - Ensures no user appears in both training and test sets
+   - Saved as:
+     - `processed/train_data.csv` - Training interactions
+     - `processed/test_data.csv` - Testing interactions
+   - Used consistently across all modules for evaluation
+
 ## 2. ALS Collaborative Filtering Model
 
 ### Mathematical Foundation
@@ -56,10 +64,19 @@ Where:
 - `λ`: regularization parameter
 
 ### Model Parameters
-- **Rank**: 10 (latent factor dimensions)
-- **Max Iterations**: 10
-- **Regularization Parameter**: 0.1
-- **Cold Start Strategy**: Drop unknown users/items
+**Cold Start Strategy**: Drop unknown users/items
+Exact combinations tested during Hyperparameter Tuning:
+- {'rank': 10, 'max_iter': 10, 'reg_param': 0.1}
+- {'rank': 20, 'max_iter': 20, 'reg_param': 0.05}
+- {'rank': 15, 'max_iter': 15, 'reg_param': 0.5}
+- {'rank': 20, 'max_iter': 5, 'reg_param': 0.1}
+- {'rank': 15, 'max_iter': 12, 'reg_param': 0.2}
+
+**Selection Criteria**:
+Final parameters chosen based on:
+- Best F1 score performance
+- Computational efficiency
+- Generalization across different users
 
 ### Implementation Details
 - Uses PySpark for scalable matrix factorization
@@ -82,10 +99,21 @@ L = (1/N) × Σ(r_ui - ŷ_ui)²
 ```
 
 ### Model Parameters
-- **Embedding Size**: 50 dimensions
+- **Embedding Size**: 50 dimensions (fixed)
 - **Optimizer**: Adam (learning rate: 0.001)
-- **Batch Size**: 256
-- **Epochs**: 10
+Exact combinations tested during Hyperparameter Tuning:
+- {'batch_size': 32, 'epochs': 50}
+- {'batch_size': 64, 'epochs': 30}
+- {'batch_size': 128, 'epochs': 20}
+- {'batch_size': 256, 'epochs': 10}
+- {'batch_size': 512, 'epochs': 5}
+
+**Selection Criteria**:
+Final parameters chosen based on:
+- Best F1 score performance
+- Computational efficiency
+- Generalization across different users
+
 
 ## 4. Hybrid Fusion Strategy
 
@@ -110,6 +138,11 @@ combined_score = 0.2 × als_normalized + 0.8 × twotower_normalized
 ```
 top_5_recommendations = sort(combined_scores, reverse=True)[:5]
 ```
+### Prediction Persistence
+
+* Full predictions saved to results/predictions/user_{id}_predictions.csv
+* Includes prediction ranks and timestamps for reproducibility
+* Enables consistent evaluation across multiple runs
 
 ## 5. Evaluation Methodology
 
@@ -138,40 +171,22 @@ NDCG@k = DCG@k / IDCG@k
 
 ### Evaluation Process
 
-1. **Data Splitting**: Reserved specific users for testing
-2. **Ground Truth**: Actual user ratings from the dataset
-3. **Prediction Generation**: All three models generate predictions
-4. **Comparative Analysis**: Performance comparison across models
-5. **Statistical Validation**: Multiple user profiles tested
+1. **Data Splitting**: User-level 80-20 split saved in processed/ folder
+2. **Model Loading**: Pre-trained models loaded from models/ directory
+3. **Prediction Loading**: Cached predictions from results/predictions/
+4. **Ground Truth**: Test user ratings from test_data.csv
+5. **Comparative Analysis**: Performance comparison across models
+6. **Statistical Validation**: Multiple user profiles with saved results
 
-## 6. Hyperparameter Tuning
 
-### ALS Model Tuning
-Tested combinations of:
-- Max Iterations: [10, 15, 20]
-- Rank: [5, 10, 12, 15, 20]
-- Regularization: [0.05, 0.1, 0.2, 0.5]
-
-### Two-Tower Model Tuning
-Tested combinations of:
-- Batch Size: [32, 64, 128, 256, 512]
-- Epochs: [5, 10, 20, 30, 50]
-- Embedding Size: [50] (fixed)
-
-### Selection Criteria
-Final parameters chosen based on:
-- Best F1 score performance
-- Computational efficiency
-- Generalization across different users
-
-## 7. Key Research Contributions
+## 6. Key Research Contributions
 
 1. **Novel Integration**: First combination of ALS and Two-Tower models for e-commerce
 2. **Adaptive Fusion**: F1-score based dynamic weighting strategy
 3. **Comprehensive Evaluation**: Multi-metric assessment across diverse user profiles
 4. **Practical Implementation**: Production-ready code for real-world deployment
 
-## 8. Implementation Notes
+## 7. Implementation Notes
 
 ### Dependencies
 - PySpark 3.5.1 for ALS implementation
