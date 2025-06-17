@@ -106,6 +106,29 @@ Comprehensive evaluation:
 python -c "from src.evaluation import RecommenderEvaluator; print('Evaluation module ready')"
 ```
 
+### 5. Full Reproduction
+To reproduce all results from the manuscript:
+
+1. Download dataset:
+```
+wget -P data/ https://github.com/aksharpandia/miniamazondata/raw/main/amazon_co-ecommerce_sample.csv
+```
+
+2. Make reproduction script executable:
+```
+chmod +x reproduce_results.sh
+```
+
+3. Run complete pipeline:
+```
+./reproduce_results.sh
+```
+
+**Expected Outputs**:
+- Processed data in `processed/`
+- Trained models in `models/`
+- Evaluation results in `results/`
+
 ## Module Usage Examples
 
 ### Data Preprocessing
