@@ -1,12 +1,13 @@
 """
 Data Preprocessing Pipeline for Amazon E-commerce Dataset
 
-This module implements probability-based imputation and feature engineering
-for the hybrid recommender system.
+This module implements probability-based imputation, feature engineering,
+and user-level train/test splitting for the hybrid recommender system.
 """
 
 import pandas as pd
 import numpy as np
+import os
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -17,7 +18,7 @@ warnings.filterwarnings('ignore')
 
 def load_amazon_dataset(filepath):
     """
-    Load Amazon e-commerce dataset
+    Load Amazon e-commerce dataset with automatic download if missing
     
     Args:
         filepath (str): Path to the CSV file
@@ -27,14 +28,12 @@ def load_amazon_dataset(filepath):
     """
     if not os.path.exists(filepath):
         print("Downloading dataset...")
-        os.system('wget https://github.com/aksharpandia/miniamazon/blob/master/amazon_co-ecommerce_sample.csv')
+        os.system(f'wget -O {filepath} https://github.com/aksharpandia/miniamazondata/raw/main/amazon_co-ecommerce_sample.csv')
+    
     try:
         data = pd.read_csv(filepath)
         print(f"Dataset loaded successfully. Shape: {data.shape}")
         return data
-    except FileNotFoundError:
-        print(f"Error: File {filepath} not found.")
-        return None
     except Exception as e:
         print(f"Error loading dataset: {str(e)}")
         return None
@@ -81,10 +80,6 @@ def probability_based_imputation(data):
     """
     Implement probability-based imputation for categorical features
     
-    This probabilistic approach for nominal categories helps maintain 
-    the original distribution of categories, especially in systems where 
-    the category frequencies significantly influence the recommendations.
-    
     Args:
         data (pd.DataFrame): Input dataframe with missing values
     
@@ -93,7 +88,6 @@ def probability_based_imputation(data):
     """
     # Identify nominal (categorical) and numerical columns
     nominal_columns = data.select_dtypes(include=['object']).columns
-    numerical_columns = data.select_dtypes(include=['float64', 'int']).columns
     
     print(f"Processing {len(nominal_columns)} categorical columns for imputation")
     
@@ -118,8 +112,18 @@ def probability_based_imputation(data):
             print(f"Imputed {num_missing} missing values in '{column}' column")
     
     return data
+
+
 def assign_placeholder_ratings(data):
-    """Implement manuscript's cold-start strategy from §3"""
+    """
+    Implement manuscript's cold-start strategy using cosine similarity
+    
+    Args:
+        data (pd.DataFrame): Input dataframe
+    
+    Returns:
+        pd.DataFrame: Dataframe with placeholder ratings
+    """
     # Calculate global mean rating
     global_mean = data['average_review_rating'].mean()
     
@@ -242,7 +246,7 @@ def engineer_features(data):
         data (pd.DataFrame): Input dataframe
     
     Returns:
-        dict: Processed datasets for different model types
+        pd.DataFrame: Processed dataframe with engineered features
     """
     print("Starting feature engineering pipeline...")
     
@@ -252,7 +256,7 @@ def engineer_features(data):
     # Step 2: Apply probability-based imputation
     data = probability_based_imputation(data)
 
-    # Step 3: placeholder ratings
+    # Step 3: Apply placeholder ratings for cold-start
     data = assign_placeholder_ratings(data)
     
     # Step 4: Encode categorical features
@@ -264,40 +268,42 @@ def engineer_features(data):
     # Step 6: Rename columns
     data = rename_columns(data)
     
-    # Create datasets for different models
-    user_item_data = data[['userId', 'itemId', 'average_review_rating']].copy()
-    
-    # Content-based features (for Two-Tower model)
-    content_features = data[[
-        'userId', 'itemId', 'manufacturer', 'price', 
-        'amazon_category_and_sub_category', 'average_review_rating'
-    ]].copy()
-    
-    processed_data = {
-        'full_data': data,
-        'user_item_interactions': user_item_data,
-        'content_features': content_features
-    }
-    
-    print(f"Feature engineering completed!")
+    print("Feature engineering completed!")
     print(f"Final dataset shape: {data.shape}")
     print(f"Unique users: {data['userId'].nunique()}")
     print(f"Unique items: {data['itemId'].nunique()}")
     
-    return processed_data
+    return data
 
 
-def get_unique_counts(data):
+def split_data(data, test_size=0.2, random_state=42):
     """
-    Display unique value counts for key columns
+    Split data into train/test sets at user level
     
     Args:
-        data (pd.DataFrame): Input dataframe
+        data (pd.DataFrame): Processed dataframe
+        test_size (float): Proportion of users for test set
+        random_state (int): Random seed for reproducibility
+    
+    Returns:
+        tuple: (train_data, test_data) DataFrames
     """
-    print("Unique value counts:")
-    for column in data.columns:
-        unique_count = data[column].nunique()
-        print(f"{column}: {unique_count}")
+    # Get unique users and sample test users
+    users = data['userId'].unique()
+    test_users = np.random.choice(users, 
+                                size=int(len(users)*test_size), 
+                                replace=False,
+                                random_state=random_state)
+    
+    # Split data
+    train_data = data[~data['userId'].isin(test_users)]
+    test_data = data[data['userId'].isin(test_users)]
+    
+    print(f"Train/test split completed ({len(train_data)}/{len(test_data)} records)")
+    print(f"Train users: {train_data['userId'].nunique()}")
+    print(f"Test users: {test_data['userId'].nunique()}")
+    
+    return train_data, test_data
 
 
 def main():
@@ -307,13 +313,12 @@ def main():
     print("=== Amazon E-commerce Data Preprocessing Pipeline ===\n")
     
     # Load dataset
-    filepath = "amazon_co-ecommerce_sample.csv"  # Update path as needed
+    filepath = "data/amazon_co-ecommerce_sample.csv"
     data = load_amazon_dataset(filepath)
     
     if data is not None:
         # Display initial info
         print(f"\nInitial dataset shape: {data.shape}")
-        get_unique_counts(data)
         
         # Check missing values
         print("\n--- Missing Values Check ---")
@@ -323,13 +328,30 @@ def main():
         print("\n--- Feature Engineering ---")
         processed_data = engineer_features(data)
         
+        # Create train/test split
+        print("\n--- Creating Train/Test Split ---")
+        train_data, test_data = split_data(processed_data)
+        
+        # Create datasets for different models
+        user_item_data = processed_data[['userId', 'itemId', 'average_review_rating']].copy()
+        content_features = processed_data[[
+            'userId', 'itemId', 'manufacturer', 'price', 
+            'amazon_category_and_sub_category', 'average_review_rating'
+        ]].copy()
+        
+        final_output = {
+            'train_data': train_data,
+            'test_data': test_data,
+            'user_item_interactions': user_item_data,
+            'content_features': content_features,
+            'full_data': processed_data
+        }
+        
         # Display final info
         print("\n--- Final Processing Summary ---")
-        final_data = processed_data['full_data']
-        print(f"Final dataset shape: {final_data.shape}")
-        print(f"Missing values after processing: {final_data.isnull().sum().sum()}")
+        print(f"Missing values after processing: {processed_data.isnull().sum().sum()}")
         
-        return processed_data
+        return final_output
     
     return None
 
