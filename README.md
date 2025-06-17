@@ -22,11 +22,12 @@ Recommender Systems are vital for enhancing user experience on e-commerce platfo
   - Probability-based imputation for missing values
   - Label encoding for categorical features (manufacturer, price, categories, ratings)
   - Feature engineering (userId from uniq_id, itemId from product_name)
+  - Train-test data split
 - **Output**: Clean, processed dataset with 0 missing values
 
 ### 2. ALS Collaborative Filtering
 - **Algorithm**: Alternating Least Squares (PySpark implementation)
-- **Parameters**: rank=10, maxIter=10, regParam=0.1
+- **Parameters**: Based on Hyperparameter Tuning
 - **Purpose**: Captures user-item interaction patterns through matrix factorization
 - **Output**: User and item latent factor matrices
 
@@ -63,13 +64,14 @@ Recommender Systems are vital for enhancing user experience on e-commerce platfo
 ├── docs/ # Additional documentation
 │ └── methodology.md # Complete methodology documentation
 ├── requirements.txt # Python dependencies
+├── reproduce_results.sh # execution script
 ├── LICENSE # MIT license
 └── README.md # This file
 ```
 
 ## Quick Start
 
-### 1. Installation
+### 1. Clone and Setup
 ```
 git clone https://github.com/yourusername/hybrid-als-twotower-recommender.git
 cd hybrid-als-twotower-recommender
@@ -124,60 +126,27 @@ chmod +x reproduce_results.sh
 ./reproduce_results.sh
 ```
 
+## Full Reproduction Process
+The script executes:
+1. **Data Preprocessing** with cold-start handling
+2. **Model Training** with hyperparameter tuning
+3. **Hybrid Recommendations** generation
+4. **Comprehensive Evaluation** with manuscript metrics
+
 **Expected Outputs**:
-- Processed data in `processed/`
-- Trained models in `models/`
-- Evaluation results in `results/`
+processed/
+├── train_data.csv # 80% user split
+├── test_data.csv # 20% user split
+└── content_features.csv # Item metadata
 
-## Module Usage Examples
+models/
+├── als/ # Spark ALS model
+└── twotower.keras # Keras Two-Tower model
 
-### Data Preprocessing
-```
-from src.data_preprocessing import main
-```
+results/
+├── predictions/ # Cached recommendations
+└── *.png # Evaluation plots
 
-Run complete preprocessing pipeline:
-```
-processed_data = main()
-if processed_data:
-print("Preprocessing completed successfully!")
-```
-
-### Hybrid Recommendations
-```
-from src.hybrid_system import HybridRecommendationSystem
-```
-
-Initialize and train hybrid system:
-```
-hybrid_system = HybridRecommendationSystem()
-hybrid_system.train_models(training_data)
-```
-
-Get recommendations for a user:
-```
-recommendations = hybrid_system.get_hybrid_recommendations(
-user_id=462,
-all_items=item_list,
-top_k=5
-)
-```
-
-### Evaluation
-```
-from src.evaluation import RecommenderEvaluator
-```
-
-Comprehensive evaluation:
-```
-evaluator = RecommenderEvaluator()
-results = evaluator.comprehensive_evaluation(actual_ratings, predicted_scores)
-```
-
-Generate evaluation plots:
-```
-evaluator.plot_precision_recall_at_k(results, model_name="Hybrid System")
-```
 
 ## Dependencies
 
