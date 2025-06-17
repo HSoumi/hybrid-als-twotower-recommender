@@ -6,8 +6,10 @@ for collaborative filtering recommendations, exactly as described in the manuscr
 """
 
 import warnings
+import os
+import pickle
 from pyspark.sql import SparkSession
-from pyspark.ml.recommendation import ALS
+from pyspark.ml.recommendation import ALS, ALSModel as SparkALSModel
 from pyspark.sql.types import *
 import pandas as pd
 import numpy as np
@@ -40,6 +42,9 @@ class ALSModel:
         self.cold_start_strategy = cold_start_strategy
         self.model = None
         self.spark = None
+        self.is_trained = False
+        self.placeholder_cache = {}
+        self.global_mean = 0.0
         
     def initialize_spark(self, app_name="ALSRecommender", driver_memory="10g"):
         """Initialize Spark session with optimized configuration"""
@@ -47,6 +52,8 @@ class ALSModel:
             self.spark = SparkSession.builder \
                 .appName(app_name) \
                 .config("spark.driver.memory", driver_memory) \
+                .config("spark.sql.adaptive.enabled", "true") \
+                .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
                 .getOrCreate()
             print(f"Spark session initialized successfully")
             return True
@@ -54,14 +61,33 @@ class ALSModel:
             print(f"Error initializing Spark: {str(e)}")
             return False
     
-    def train(self, data):
+    def _load_placeholder_cache(self, data):
+        """Load placeholder ratings for cold-start handling"""
+        try:
+            # Calculate global mean rating
+            self.global_mean = data['average_review_rating'].mean()
+            
+            # Create placeholder cache (item_id -> placeholder_rating)
+            self.placeholder_cache = dict(zip(
+                data['itemId'], 
+                data['average_review_rating']
+            ))
+            
+            print(f"Loaded placeholder cache with {len(self.placeholder_cache)} items")
+            print(f"Global mean rating: {self.global_mean:.4f}")
+            
+        except Exception as e:
+            print(f"Error loading placeholder cache: {str(e)}")
+            self.global_mean = 3.0  # Default fallback
+    
+    def train(self, train_data):
         """
-        Train ALS model on user-item interaction data (matches manuscript §4.2)
+        Train ALS model on training data (matches manuscript §4.2)
         
         Parameters:
         -----------
-        data : pd.DataFrame
-            DataFrame with columns: userId, itemId, average_review_rating
+        train_data : pd.DataFrame
+            Training DataFrame with columns: userId, itemId, average_review_rating
             
         Returns:
         --------
@@ -72,8 +98,14 @@ class ALSModel:
                 if not self.initialize_spark():
                     return False
             
+            # Load placeholder cache for cold-start handling
+            self._load_placeholder_cache(train_data)
+            
             # Convert pandas DataFrame to Spark DataFrame
-            spark_df = self.spark.createDataFrame(data)
+            spark_df = self.spark.createDataFrame(train_data)
+            
+            # Cache the DataFrame for better performance
+            spark_df.cache()
             
             # Initialize ALS model with parameters from Table 1
             als = ALS(
@@ -87,7 +119,10 @@ class ALSModel:
             )
             
             # Train the model
+            print(f"Training ALS model with {len(train_data)} interactions...")
             self.model = als.fit(spark_df)
+            self.is_trained = True
+            
             print(f"ALS model trained successfully with rank={self.rank}, "
                   f"maxIter={self.max_iter}, regParam={self.reg_param}")
             return True
@@ -99,7 +134,7 @@ class ALSModel:
     def predict_for_user(self, user_id, all_items):
         """
         Generate predictions for a specific user across all items
-        (matches manuscript evaluation methodology)
+        (matches manuscript evaluation methodology with cold-start handling)
         
         Parameters:
         -----------
@@ -113,7 +148,7 @@ class ALSModel:
         list : List of (itemId, prediction_score) tuples
         """
         try:
-            if self.model is None:
+            if not self.is_trained:
                 raise ValueError("Model not trained yet. Call train() first.")
             
             # Create user-item pairs for prediction
@@ -129,17 +164,30 @@ class ALSModel:
             # Generate predictions
             predictions = self.model.transform(user_item_df)
             predictions_list = predictions.select("itemId", "prediction").collect()
-            result = [(row.itemId, float(row.prediction)) for row in predictions_list]
-    
-            # Cold-start handling (manuscript's probability imputation)
-            from src.data_preprocessing import get_placeholder_rating  # New import
+            
+            # Convert to list of tuples, handling NaN predictions
+            result = []
+            predicted_items = set()
+            
+            for row in predictions_list:
+                if row.prediction is not None and not np.isnan(row.prediction):
+                    result.append((row.itemId, float(row.prediction)))
+                    predicted_items.add(row.itemId)
+                else:
+                    # Use placeholder for NaN predictions (cold-start)
+                    placeholder = self.placeholder_cache.get(row.itemId, self.global_mean)
+                    result.append((row.itemId, float(placeholder)))
+                    predicted_items.add(row.itemId)
+            
+            # Handle any items not in predictions (additional cold-start handling)
             all_items_set = set(all_items)
-            predicted_items = {item_id for item_id, _ in result}
             cold_items = all_items_set - predicted_items
-    
+            
             for item_id in cold_items:
-                placeholder = get_placeholder_rating(item_id)  # Implemented in data_preprocessing
-                result.append((item_id, placeholder))
+                placeholder = self.placeholder_cache.get(item_id, self.global_mean)
+                result.append((item_id, float(placeholder)))
+            
+            print(f"Generated {len(result)} predictions for user {user_id}")
             return result
             
         except Exception as e:
@@ -171,26 +219,118 @@ class ALSModel:
         sorted_predictions = sorted(predictions, key=lambda x: x[1], reverse=True)
         return sorted_predictions[:top_k]
     
+    def save_model(self, model_path, metadata_path=None):
+        """
+        Save trained ALS model to disk
+        
+        Parameters:
+        -----------
+        model_path : str
+            Path to save the Spark ALS model
+        metadata_path : str, optional
+            Path to save model metadata (parameters, cache, etc.)
+        """
+        try:
+            if not self.is_trained:
+                raise ValueError("No trained model to save")
+            
+            # Save Spark ALS model
+            self.model.save(model_path)
+            print(f"ALS model saved to {model_path}")
+            
+            # Save metadata and placeholder cache
+            if metadata_path is None:
+                metadata_path = f"{model_path}_metadata.pkl"
+            
+            metadata = {
+                'rank': self.rank,
+                'max_iter': self.max_iter,
+                'reg_param': self.reg_param,
+                'cold_start_strategy': self.cold_start_strategy,
+                'placeholder_cache': self.placeholder_cache,
+                'global_mean': self.global_mean,
+                'is_trained': self.is_trained
+            }
+            
+            with open(metadata_path, 'wb') as f:
+                pickle.dump(metadata, f)
+            print(f"Model metadata saved to {metadata_path}")
+            
+        except Exception as e:
+            print(f"Error saving model: {str(e)}")
+    
+    def load_model(self, model_path, metadata_path=None):
+        """
+        Load trained ALS model from disk
+        
+        Parameters:
+        -----------
+        model_path : str
+            Path to the saved Spark ALS model
+        metadata_path : str, optional
+            Path to the saved model metadata
+            
+        Returns:
+        --------
+        ALSModel : Self instance with loaded model
+        """
+        try:
+            # Initialize Spark if not already done
+            if self.spark is None:
+                if not self.initialize_spark():
+                    raise RuntimeError("Failed to initialize Spark session")
+            
+            # Load Spark ALS model
+            self.model = SparkALSModel.load(model_path)
+            print(f"ALS model loaded from {model_path}")
+            
+            # Load metadata and placeholder cache
+            if metadata_path is None:
+                metadata_path = f"{model_path}_metadata.pkl"
+            
+            if os.path.exists(metadata_path):
+                with open(metadata_path, 'rb') as f:
+                    metadata = pickle.load(f)
+                
+                self.rank = metadata['rank']
+                self.max_iter = metadata['max_iter']
+                self.reg_param = metadata['reg_param']
+                self.cold_start_strategy = metadata['cold_start_strategy']
+                self.placeholder_cache = metadata['placeholder_cache']
+                self.global_mean = metadata['global_mean']
+                self.is_trained = metadata['is_trained']
+                
+                print(f"Model metadata loaded from {metadata_path}")
+            else:
+                print(f"Warning: Metadata file {metadata_path} not found")
+                self.is_trained = True  # Assume model is trained if file exists
+            
+            return self
+            
+        except Exception as e:
+            print(f"Error loading model: {str(e)}")
+            return None
+    
     def stop_spark(self):
-        """Stop Spark session"""
+        """Stop Spark session and clean up resources"""
         if self.spark:
             self.spark.stop()
             self.spark = None
             print("Spark session stopped")
 
 
-def hyperparameter_tuning(data, param_grid, test_size=0.2, random_state=42):
+def hyperparameter_tuning(train_data, val_data, param_grid, random_state=42):
     """
     Perform F1-based hyperparameter tuning as described in manuscript §4.3
     
     Parameters:
     -----------
-    data : pd.DataFrame
+    train_data : pd.DataFrame
         Training data with columns: userId, itemId, average_review_rating
+    val_data : pd.DataFrame
+        Validation data for F1 score calculation
     param_grid : list
         List of parameter dictionaries to try (matches Table 1)
-    test_size : float
-        Proportion of data to use for validation
     random_state : int
         Random seed for reproducibility
         
@@ -201,36 +341,35 @@ def hyperparameter_tuning(data, param_grid, test_size=0.2, random_state=42):
     best_params = None
     best_f1 = 0.0
     
-    # Split data into train and validation sets
-    train_data, val_data = train_test_split(data, test_size=test_size, 
-                                          random_state=random_state)
-    
     print(f"Hyperparameter tuning with {len(param_grid)} combinations")
     print(f"Training samples: {len(train_data)}, Validation samples: {len(val_data)}")
     
-    for params in param_grid:
-        print(f"\nTesting parameters: {params}")
+    for i, params in enumerate(param_grid):
+        print(f"\n[{i+1}/{len(param_grid)}] Testing parameters: {params}")
         model = ALSModel(**params)
         
         try:
-            # Train model
+            # Train model on training data
             if not model.train(train_data):
+                print("Training failed")
                 continue
             
-            # Prepare validation users (5% sample for efficiency)
+            # Evaluate on validation users (sample for efficiency)
             val_users = val_data['userId'].unique()
-            sample_users = np.random.choice(val_users, 
-                                           size=int(len(val_users)*0.05), 
-                                           replace=False)
+            sample_size = min(50, len(val_users))  # Max 50 users for efficiency
+            sample_users = np.random.choice(val_users, size=sample_size, replace=False)
             
             f1_scores = []
             for user_id in sample_users:
-                # Get user's actual ratings
+                # Get user's actual ratings from validation set
                 user_ratings = val_data[val_data['userId'] == user_id]
+                if len(user_ratings) == 0:
+                    continue
+                    
                 actual = dict(zip(user_ratings['itemId'], 
                                 user_ratings['average_review_rating']))
                 
-                # Get all items for prediction
+                # Get all items for prediction from validation set
                 all_items = val_data['itemId'].unique().tolist()
                 
                 # Generate predictions
@@ -243,7 +382,7 @@ def hyperparameter_tuning(data, param_grid, test_size=0.2, random_state=42):
             
             # Calculate average F1 score
             avg_f1 = np.mean(f1_scores) if f1_scores else 0.0
-            print(f"Average F1@10: {avg_f1:.4f}")
+            print(f"Average F1@10: {avg_f1:.4f} (evaluated on {len(f1_scores)} users)")
             
             # Update best parameters
             if avg_f1 > best_f1:
@@ -251,11 +390,20 @@ def hyperparameter_tuning(data, param_grid, test_size=0.2, random_state=42):
                 best_params = params.copy()
                 print(f"New best F1: {best_f1:.4f}")
             
+        except Exception as e:
+            print(f"Error: {str(e)}")
+            
         finally:
             # Cleanup Spark resources
             model.stop_spark()
     
-    print(f"\nBest parameters: {best_params} (F1@10: {best_f1:.4f})")
+    print(f"\n{'='*60}")
+    print(f"HYPERPARAMETER TUNING COMPLETED")
+    print(f"{'='*60}")
+    print(f"Best parameters: {best_params}")
+    print(f"Best F1@10: {best_f1:.4f}")
+    print(f"{'='*60}")
+    
     return best_params
 
 
@@ -273,4 +421,8 @@ if __name__ == "__main__":
     ]
     
     print("Available hyperparameter combinations:", len(param_grid))
-
+    print("Features:")
+    print("- F1-based hyperparameter tuning")
+    print("- Model persistence (save/load)")
+    print("- Cold-start handling with placeholder ratings")
+    print("- Train/validation data splitting")
