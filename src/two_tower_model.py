@@ -1,34 +1,16 @@
-"""
-Two-Tower Content-Based Filtering Model Implementation
-
-This module implements the Two-Tower neural network model using TensorFlow/Keras
-for content-based recommendations as described in the manuscript.
-"""
-
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import (Input, Embedding, Dot, Flatten, Dense, 
-                                   Concatenate, LayerNormalization)
+from tensorflow.keras.models import Model, load_model
+from tensorflow.keras.layers import Input, Embedding, Flatten, Dense, Concatenate, Dot, LayerNormalization
 from tensorflow.keras.optimizers import Adam
-from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.callbacks import EarlyStopping
 from sklearn.model_selection import train_test_split
-import warnings
-
-warnings.filterwarnings('ignore')
-
+from sklearn.preprocessing import MinMaxScaler
+import pickle
+import os
 
 class TwoTowerModel:
-    """
-    Two-Tower Content-Based Filtering Model using TensorFlow
-    
-    Architecture matches manuscript description:
-    - User Tower: userId embedding
-    - Item Tower: Combines itemId, manufacturer, category, and price features
-    - Similarity: Dot product of user and item vectors (Equation 2)
-    """
-    
     def __init__(self, num_users, num_items, num_manufacturers, num_categories,
                  embedding_size=50, learning_rate=0.001):
         self.num_users = num_users
@@ -42,279 +24,128 @@ class TwoTowerModel:
         self.is_trained = False
 
     def _build_item_tower(self):
-        """Simplified item tower without BERT per manuscript"""
-        # Item ID embedding
         item_id_in = Input(shape=(1,), name='item_id_in')
-        item_id_emb = Embedding(self.num_items, self.embedding_size, 
-                              name='item_id_emb')(item_id_in)
+        item_id_emb = Embedding(self.num_items, self.embedding_size)(item_id_in)
         item_id_vec = Flatten()(item_id_emb)
         
-        # Manufacturer embedding
         manufacturer_in = Input(shape=(1,), name='manufacturer_in')
-        manufacturer_emb = Embedding(self.num_manufacturers, 8,
-                                   name='manufacturer_emb')(manufacturer_in)
+        manufacturer_emb = Embedding(self.num_manufacturers, 8)(manufacturer_in)
         manufacturer_vec = Flatten()(manufacturer_emb)
         
-        # Category embedding
         category_in = Input(shape=(1,), name='category_in')
-        category_emb = Embedding(self.num_categories, 8,
-                               name='category_emb')(category_in)
+        category_emb = Embedding(self.num_categories, 8)(category_in)
         category_vec = Flatten()(category_emb)
         
-        # Numeric features (price, avg rating)
         numeric_in = Input(shape=(2,), name='numeric_in')
         numeric_dense = Dense(16, activation='relu')(numeric_in)
         
-        # Concatenate features 
-        concat = Concatenate()([item_id_vec, manufacturer_vec, 
-                              category_vec, numeric_dense])
-        
-        # Final item representation
-        item_vec = Dense(self.embedding_size, activation=None)(concat)
+        concat = Concatenate()([item_id_vec, manufacturer_vec, category_vec, numeric_dense])
+        item_vec = Dense(self.embedding_size)(concat)
         item_vec = LayerNormalization()(item_vec)
         
         return [item_id_in, manufacturer_in, category_in, numeric_in], item_vec
 
     def build_model(self):
-        """Build complete Two-Tower architecture per manuscript"""
-        # User tower
         user_in = Input(shape=(1,), name='user_in')
-        user_emb = Embedding(self.num_users, self.embedding_size,
-                           name='user_emb')(user_in)
+        user_emb = Embedding(self.num_users, self.embedding_size)(user_in)
         user_vec = Flatten()(user_emb)
         user_vec = LayerNormalization()(user_vec)
         
-        # Item tower
         item_inputs, item_vec = self._build_item_tower()
+        dot_product = Dot(axes=1)([user_vec, item_vec])
         
-        # Dot product similarity 
-        dot_product = Dot(axes=1, name='dot_product')([user_vec, item_vec])
-        
-        # Compile model
         self.model = Model(inputs=[user_in] + item_inputs, outputs=dot_product)
         self.model.compile(optimizer=Adam(self.learning_rate),
                          loss='mean_squared_error',
                          metrics=['mae'])
-        print("Two-Tower model built per manuscript specifications")
         return self.model
 
-    def train(self, data, batch_size=256, epochs=10, validation_split=0.2):
-        """Train model with full feature set as per manuscript"""
-        try:
-            if self.model is None:
-                self.build_model()
-            
-            X = {
-                'user_in': data['userId'].values,
-                'item_id_in': data['itemId'].values,
-                'manufacturer_in': data['manufacturer_id'].values,
-                'category_in': data['category_id'].values,
-                'numeric_in': data[['price', 'average_review_rating']].values
-            }
-            y = data['average_review_rating'].values
-            
-            # Train with validation split
-            history = self.model.fit(X, y, batch_size=batch_size, epochs=epochs,
-                                   validation_split=validation_split, verbose=1)
-            self.is_trained = True
-            return history
-            
-        except Exception as e:
-            print(f"Training error: {str(e)}")
-            return None
+    def train(self, train_data, val_data=None, batch_size=256, epochs=10):
+        if self.model is None:
+            self.build_model()
+        
+        train_features = self._prepare_features(train_data)
+        val_features = self._prepare_features(val_data) if val_data is not None else None
+        
+        early_stop = EarlyStopping(monitor='val_loss', patience=3)
+        
+        history = self.model.fit(
+            train_features, train_data['average_review_rating'],
+            validation_data=(val_features, val_data['average_review_rating']) if val_data else None,
+            batch_size=batch_size,
+            epochs=epochs,
+            callbacks=[early_stop] if val_data else None
+        )
+        self.is_trained = True
+        return history
 
-    def predict_for_user(self, user_id, all_items):
-        """
-        Generate predictions for a specific user across all items
-        
-        Parameters:
-        -----------
-        user_id : int
-            User ID for which to generate predictions
-        all_items : list
-            List of all item IDs
-            
-        Returns:
-        --------
-        list : List of (itemId, prediction_score) tuples
-        """
-        try:
-            if not self.is_trained:
-                raise ValueError("Model not trained yet. Call train() first.")
-            
-            # Prepare input data
-            user_ids = np.array([user_id] * len(all_items))
-            item_ids = np.array(all_items)
-            
-            # Generate predictions
-            predictions = self.model.predict([user_ids, item_ids], verbose=0)
-            
-            # Convert to list of tuples
-            result = [(int(item_ids[i]), float(predictions[i])) 
-                     for i in range(len(all_items))]
-            
-            print(f"Generated {len(result)} predictions for user {user_id}")
-            return result
-            
-        except Exception as e:
-            print(f"Error generating predictions: {str(e)}")
-            return []
-    
-    def get_top_recommendations(self, user_id, all_items, top_k=5):
-        """
-        Get top-K recommendations for a user
-        
-        Parameters:
-        -----------
-        user_id : int
-            User ID for recommendations
-        all_items : list
-            List of all available item IDs
-        top_k : int
-            Number of top recommendations to return
-            
-        Returns:
-        --------
-        list : List of top-K (itemId, score) tuples sorted by score
-        """
-        predictions = self.predict_for_user(user_id, all_items)
-        if not predictions:
-            return []
-        
-        # Sort by prediction score in descending order and get top-K
-        sorted_predictions = sorted(predictions, key=lambda x: x[1], reverse=True)
-        return sorted_predictions[:top_k]
-    
-    def save_model(self, filepath):
-        """Save the trained model"""
-        if self.model:
-            self.model.save(filepath)
-            print(f"Model saved to {filepath}")
-    
-    def load_model(self, filepath):
-        """Load a pre-trained model"""
-        try:
-            self.model = tf.keras.models.load_model(filepath)
-            self.is_trained = True
-            print(f"Model loaded from {filepath}")
-        except Exception as e:
-            print(f"Error loading model: {str(e)}")
+    def _prepare_features(self, data):
+        return {
+            'user_in': data['userId'].values,
+            'item_id_in': data['itemId'].values,
+            'manufacturer_in': data['manufacturer_id'].values,
+            'category_in': data['category_id'].values,
+            'numeric_in': self.scaler.transform(data[['price', 'average_review_rating']])
+        }
 
+    def predict_for_user(self, user_id, item_features):
+        inputs = {
+            'user_in': np.full(len(item_features), user_id),
+            'item_id_in': item_features['itemId'].values,
+            'manufacturer_in': item_features['manufacturer_id'].values,
+            'category_in': item_features['category_id'].values,
+            'numeric_in': self.scaler.transform(item_features[['price', 'average_review_rating']])
+        }
+        return list(zip(item_features['itemId'], self.model.predict(inputs).flatten()))
 
-def hyperparameter_tuning(data, param_grid, test_size=0.2, random_state=42):
-    """
-    Perform F1-based hyperparameter tuning as described in manuscript §4.3
-    
-    Parameters:
-    -----------
-    data : pd.DataFrame
-        Training data with columns: userId, itemId, and features
-    param_grid : list
-        List of parameter dictionaries to try (matches Table 2)
-    test_size : float
-        Proportion of data to use for validation
-    random_state : int
-        Random seed for reproducibility
+    def save_model(self, model_path):
+        self.model.save(model_path)
+        with open(f"{model_path}_scaler.pkl", 'wb') as f:
+            pickle.dump(self.scaler, f)
+
+    @staticmethod
+    def load_model(model_path):
+        model = load_model(model_path)
+        with open(f"{model_path}_scaler.pkl", 'rb') as f:
+            scaler = pickle.load(f)
         
-    Returns:
-    --------
-    dict : Best parameters found based on average F1@10
-    """
+        new_model = TwoTowerModel(1,1,1,1)  # Dummy initialization
+        new_model.model = model
+        new_model.scaler = scaler
+        new_model.is_trained = True
+        return new_model
+
+def hyperparameter_tuning(train_data, val_data, param_grid):
     best_params = None
     best_f1 = 0.0
-    
-    # Split data by users for cold-start evaluation
-    users = data['userId'].unique()
-    train_users, val_users = train_test_split(users, test_size=test_size, 
-                                            random_state=random_state)
-    
-    train_data = data[data['userId'].isin(train_users)]
-    val_data = data[data['userId'].isin(val_users)]
-    
-    # Get complete item features from all data
-    all_items = data[[
-        'itemId', 'manufacturer_id', 'category_id', 
-        'price', 'average_review_rating', 'bert_768'
-    ]].drop_duplicates()
-    
-    print(f"Training users: {len(train_users)}, Validation users: {len(val_users)}")
-    print(f"Total items: {all_items['itemId'].nunique()}")
-    
+    num_users = train_data['userId'].nunique()
+    num_items = train_data['itemId'].nunique()
+    num_manufacturers = train_data['manufacturer_id'].nunique()
+    num_categories = train_data['category_id'].nunique()
+
     for params in param_grid:
-        print(f"\nTesting combination: {params}")
+        model = TwoTowerModel(num_users, num_items, num_manufacturers, num_categories)
+        history = model.train(train_data, val_data, **params)
         
-        try:
-            # Initialize model with current dataset stats
-            model = TwoTowerModel(
-                num_users=data['userId'].nunique(),
-                num_items=data['itemId'].nunique(),
-                num_manufacturers=data['manufacturer_id'].nunique(),
-                num_categories=data['category_id'].nunique(),
-                embedding_size=50,  # Fixed per manuscript
-                learning_rate=0.001  # Default
-            )
-            
-            # Train model with current parameters
-            history = model.train(
-                train_data,
-                batch_size=params['batch_size'],
-                epochs=params['epochs']
-            )
-            
-            if not history:
-                print("Training failed")
-                continue
-                
-            # Evaluate on validation users (sample 50 for efficiency)
-            f1_scores = []
-            for user_id in val_users[:50]:
-                # Get actual ratings from validation data
-                user_ratings = val_data[val_data['userId'] == user_id]
-                if len(user_ratings) < 1:
-                    continue
-                
-                actual = dict(zip(user_ratings['itemId'], 
-                                user_ratings['average_review_rating']))
-                
-                # Generate predictions for all items
-                preds = model.predict_for_user(user_id, all_items)
-                pred_dict = {item: score for item, score in preds}
-                
-                # Calculate F1@10 as per manuscript
-                f1 = compute_f1_score(actual, pred_dict, k=10)
-                f1_scores.append(f1)
-            
-            if not f1_scores:
-                print("No valid users for evaluation")
-                continue
-                
-            avg_f1 = np.mean(f1_scores)
-            print(f"Average F1@10: {avg_f1:.4f}")
-            
-            if avg_f1 > best_f1:
-                best_f1 = avg_f1
-                best_params = params.copy()
-                print(f"New best F1: {best_f1:.4f}")
-                
-        except Exception as e:
-            print(f"Error: {str(e)}")
-            continue
-        finally:
-            tf.keras.backend.clear_session()
+        f1_scores = []
+        for user_id in val_data['userId'].unique()[:50]:
+            actual = dict(zip(val_data[val_data['userId'] == user_id]['itemId'],
+                            val_data[val_data['userId'] == user_id]['average_review_rating']))
+            preds = model.predict_for_user(user_id, val_data)
+            f1 = compute_f1_score(actual, dict(preds))
+            f1_scores.append(f1)
+        
+        avg_f1 = np.mean(f1_scores)
+        if avg_f1 > best_f1:
+            best_f1 = avg_f1
+            best_params = params.copy()
     
-    print(f"\nBest parameters: {best_params} (F1@10: {best_f1:.4f})")
     return best_params
 
-if __name__ == "__main__":
-    print("Two-Tower Model module loaded successfully")
-    
-    # Parameter grid exactly matching Table 2 in manuscript
-    param_grid = [
-        {'batch_size': 32, 'epochs': 50},
-        {'batch_size': 64, 'epochs': 30},
-        {'batch_size': 128, 'epochs': 20},
-        {'batch_size': 256, 'epochs': 10},
-        {'batch_size': 512, 'epochs': 5}
-    ]
-    
-    print("Available hyperparameter combinations:", len(param_grid))
+def compute_f1_score(actual, pred, k=10):
+    actual_items = set(actual.keys())
+    pred_items = set([item for item, _ in sorted(pred.items(), key=lambda x: x[1], reverse=True)[:k]])
+    tp = len(actual_items & pred_items)
+    precision = tp / k if k > 0 else 0
+    recall = tp / len(actual_items) if len(actual_items) > 0 else 0
+    return 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
