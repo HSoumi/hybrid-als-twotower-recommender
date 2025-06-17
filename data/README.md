@@ -142,6 +142,17 @@ Column renaming:
 ```
 uniq_id → userId (for clarity in collaborative filtering)
 ```
+## Train-Test Split
+
+The dataset is split into training and testing sets using an 80-20 user-level split. This means that 80% of the users' data is used for training the models, and 20% is reserved for testing and evaluation. The split is performed after the preprocessing pipeline to ensure consistency and reproducibility.
+
+The split datasets are saved as CSV files in the `processed/` directory:
+- `train_data.csv`: Contains 80% of the users' interactions used for model training.
+- `test_data.csv`: Contains 20% of the users' interactions used for model evaluation.
+
+These files are then loaded and used across various modules including `als_model.py`, `two_tower_model.py`, and `evaluation.py` to maintain a consistent evaluation framework throughout the implementation.
+
+This approach ensures that the models are trained and evaluated on disjoint user sets, preventing data leakage and providing a realistic assessment of model performance.
 
 ## Final Dataset Structure
 
