@@ -121,7 +121,11 @@ class HybridRecommendationSystem:
 
 if __name__ == "__main__":
     print("Hybrid Recommendation System module loaded successfully")
-    print("Example usage:")
+    print("Example usage for research users:")
     print("hrs = HybridRecommendationSystem()")
     print("hrs.load_models('models/als', 'models/twotower.keras')")
-    print("recommendations = hrs.get_hybrid_recommendations(462, all_items, save_predictions=True)")
+    
+    # Process both research users
+    research_users = [462, 9435]  # The chosen users as per the manuscript
+    for user_id in research_users:
+        print(f"recommendations_{user_id} = hrs.get_hybrid_recommendations({user_id}, all_items, save_predictions=True)")
